@@ -2,181 +2,414 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
-/// NTP 服务器列表（用户在 UI 中选择其一）
+import 'package:meta/meta.dart';
+
+/// NTP 服务器（源池）
 class NtpServer {
   final String host;
   final String label;
   const NtpServer(this.host, this.label);
 }
 
+/// 源池：stratum-1 为主 + 国内 stratum-2 快源
 const List<NtpServer> kNtpServers = [
-  NtpServer('ntp.aliyun.com', 'ntp.aliyun.com (阿里云)'),
-  NtpServer('ntp1.aliyun.com', 'ntp1.aliyun.com (阿里云)'),
-  NtpServer('cn.ntp.org.cn', 'cn.ntp.org.cn (中国)'),
+  NtpServer('time.cloudflare.com', 'Cloudflare (S1)'),
+  NtpServer('time.google.com', 'Google (S1)'),
+  NtpServer('time.apple.com', 'Apple (S1)'),
+  NtpServer('ntp.aliyun.com', '阿里云 (S2)'),
+  NtpServer('cn.pool.ntp.org', 'NTP Pool CN'),
+  NtpServer('time.windows.com', 'Windows (S2)'),
 ];
 
-/// 单次 NTP 请求的原始计时结果
-class _NtpSample {
-  final Duration netRtt; // 纯网络往返（已扣除服务器处理时间）
-  final DateTime serverTimeAtRecv; // 收包瞬间的服务器绝对时间 = T3 + halfNet
-  final Duration serverProc; // 服务器处理耗时 T3-T2
-  _NtpSample(this.netRtt, this.serverTimeAtRecv, this.serverProc);
+/// 单次 NTP 请求结果（携带 swRecv，修复锚点配对 bug）
+class NtpSample {
+  final String host;
+  final int swSendMicros; // T1：发包瞬间 Stopwatch 读数
+  final int swRecvMicros; // T4：收包瞬间 Stopwatch 读数（锚点配对关键）
+  final DateTime t2; // 服务器收到时刻
+  final DateTime t3; // 服务器发出时刻
+  final Duration roundTrip; // T4 - T1
+  final Duration netDelay; // roundTrip - (T3 - T2)
+  final int stratum;
+  final Duration rootDelay;
+  final Duration rootDispersion;
+
+  NtpSample({
+    required this.host,
+    required this.swSendMicros,
+    required this.swRecvMicros,
+    required this.t2,
+    required this.t3,
+    required this.roundTrip,
+    required this.netDelay,
+    required this.stratum,
+    required this.rootDelay,
+    required this.rootDispersion,
+  });
+
+  bool get isValid => stratum >= 1 && stratum <= 15 && !netDelay.isNegative;
+
+  Duration get halfNet => Duration(microseconds: netDelay.inMicroseconds ~/ 2);
+
+  /// 收包瞬间的服务器绝对 UTC 时间 = T3 + halfNet
+  DateTime get serverTimeAtRecv => t3.add(halfNet);
+
+  int get serverTimeAtRecvMicros => serverTimeAtRecv.microsecondsSinceEpoch;
+
+  /// offset = 服务器时间 - Stopwatch 读数（微秒）
+  int get offsetMicros => serverTimeAtRecvMicros - swRecvMicros;
+
+  /// 不确定区间半宽（微秒）：netDelay/2 + rootDispersion + rootDelay/2
+  int get halfWidthMicros {
+    final hw = netDelay.inMicroseconds ~/ 2 +
+        rootDispersion.inMicroseconds +
+        rootDelay.inMicroseconds ~/ 2;
+    return hw < 1000 ? 1000 : hw;
+  }
 }
 
 /// 一次同步的详细结果
 class SyncResult {
-  final String serverHost;
   final bool success;
-  final DateTime? anchorTime; // 收包瞬间的服务器绝对时间（锚点）
-  final Duration? bestRtt;
-  final List<Duration> allNetRtts; // 3 次请求各自的纯网络往返
-  final List<Duration> serverProcs; // 3 次各自的服务器处理耗时
+  final String? chosenSource;
+  final int? chosenStratum;
+  final DateTime? anchorTime;
+  final Duration? uncertainty; // 半宽
+  final Duration? bestNetDelay;
+  final int serversTried;
+  final int serversOK;
+  final Map<String, Duration> perServerBestDelay;
+  final double? freqCorrection;
   final String? error;
+
   SyncResult({
-    required this.serverHost,
     required this.success,
+    this.chosenSource,
+    this.chosenStratum,
     this.anchorTime,
-    this.bestRtt,
-    required this.allNetRtts,
-    required this.serverProcs,
+    this.uncertainty,
+    this.bestNetDelay,
+    required this.serversTried,
+    required this.serversOK,
+    required this.perServerBestDelay,
+    this.freqCorrection,
     this.error,
   });
 }
 
 /// NTP 时间引擎
 ///
-/// 绝对时间只来自 NTP 服务器的 T2/T3 时间戳；
-/// 本地 Stopwatch（底层 QueryPerformanceCounter 单调计数器）仅用于测量
-/// 经过时长以推进时间，绝不读取本地计算机时钟作为时间源。
+/// 算法移植自 ntpd/chronyd：
+/// - 时钟过滤器：每源多样本取最小 netDelay（Cristian + min-RTT）
+/// - Marzullo 交集：多源区间找最大重叠集，剔 falseticker，取最窄区间
+/// - PLL/FLL 频率纪律：历史锚点最小二乘拟合 QPC 频率，修正长期漂移
 ///
-/// 程序标准时间 = anchorTime + (Stopwatch.elapsed - anchorSw)
+/// 绝对时间只来自 NTP 服务器 T2/T3；本地 Stopwatch(QPC) 仅测量经过时长。
+/// 程序标准时间 = anchorTime + (Stopwatch.elapsed - anchorSw) * freq
+///
+/// 同步策略：仅启动时自动同步一次 + 用户点「同步」按钮；无周期后台重同步。
 class NtpTimeEngine {
   static const int _ntpPort = 123;
-  static const int _timeoutSec = 4;
+  static const int _queryTimeoutSec = 1;
+  static const int _samplesPerServer = 8;
+  static const int _serverDeadlineSec = 8;
+  static const int _minConsensusServers = 4;
+  static const int _maxHistory = 16;
+  static const int _jumpThresholdMicros = 200000; // 200ms
+  static const Duration _qualityGateRtt = Duration(milliseconds: 80);
+  static const int _ntpToUnixSecs = 2208988800; // 1900-01-01 → 1970-01-01
 
   final Stopwatch _sw = Stopwatch()..start();
 
-  DateTime? _anchorTime; // 收包瞬间的服务器绝对 UTC 时间
-  int _anchorSwMicros = 0; // 收包瞬间的 Stopwatch 微秒读数
+  DateTime? _anchorTime;
+  int _anchorSwMicros = 0;
+  double _freq = 1.0;
   bool _synced = false;
+  bool _syncing = false;
+  SyncResult? _lastResult;
+
+  final List<({int sw, int serverMicros})> _history = [];
+
+  NtpTimeEngine();
 
   bool get isSynced => _synced;
   DateTime? get anchorTime => _anchorTime;
+  SyncResult? get lastResult => _lastResult;
+  double get freq => _freq;
 
-  /// 当前程序标准时间（绝对时间，源自服务器；用 Stopwatch 时长推进）
   DateTime now() {
     if (!_synced || _anchorTime == null) {
       throw StateError('NTP 尚未同步');
     }
-    final elapsed = _sw.elapsedMicroseconds - _anchorSwMicros;
-    return _anchorTime!.add(Duration(microseconds: elapsed));
+    final elapsed = (_sw.elapsedMicroseconds - _anchorSwMicros) * _freq;
+    return _anchorTime!.add(Duration(microseconds: elapsed.round()));
   }
 
-  /// 当前 Stopwatch 微秒读数（供调度器换算目标时刻用）
   int swMicros() => _sw.elapsedMicroseconds;
 
-  /// 将目标服务器绝对时间换算为 Stopwatch 目标读数（微秒）
   int targetToSwMicros(DateTime target) {
     if (!_synced || _anchorTime == null) {
       throw StateError('NTP 尚未同步');
     }
-    final delta = target.difference(_anchorTime!);
-    return _anchorSwMicros + delta.inMicroseconds;
+    final deltaUs = target.difference(_anchorTime!).inMicroseconds;
+    return _anchorSwMicros + (deltaUs / _freq).round();
   }
 
-  /// 请求 5 次，剔除最高 RTT 的离群值，取最优为锚点。
-  /// 若最优 RTT > 80ms 则拒绝本次同步。
-  Future<SyncResult> synchronize(String host) async {
-    final samples = <_NtpSample>[];
-    final errors = <String>[];
+  Future<SyncResult> synchronize() async {
+    if (_syncing) {
+      return _lastResult ??
+          SyncResult(
+            success: false,
+            serversTried: 0,
+            serversOK: 0,
+            perServerBestDelay: const {},
+            error: '同步进行中',
+          );
+    }
+    return _synchronizeInternal();
+  }
 
-    for (var i = 0; i < 5; i++) {
-      try {
-        final s = await _queryOnce(host);
-        if (s != null) {
-          samples.add(s);
-        } else {
-          errors.add('第${i + 1}次: 无响应');
+  Future<SyncResult> _synchronizeInternal() async {
+    _syncing = true;
+    final perServerBest = <String, Duration>{};
+    try {
+      final n = kNtpServers.length;
+      final results = List<NtpSample?>.filled(n, null);
+      final done = Completer<void>();
+      var completed = 0;
+      var nonNull = 0;
+      for (var i = 0; i < n; i++) {
+        final idx = i;
+        _queryServer(kNtpServers[i].host)
+            .timeout(const Duration(seconds: _serverDeadlineSec),
+                onTimeout: () => null)
+            .then((r) {
+          results[idx] = r;
+          completed++;
+          if (r != null) nonNull++;
+          if (!done.isCompleted &&
+              (nonNull >= _minConsensusServers || completed == n)) {
+            done.complete();
+          }
+        });
+      }
+      await done.future;
+
+      final candidates = <NtpSample>[];
+      for (var i = 0; i < n; i++) {
+        final r = results[i];
+        if (r != null) {
+          candidates.add(r);
+          perServerBest[kNtpServers[i].host] = r.netDelay;
         }
-      } catch (e) {
-        errors.add('第${i + 1}次: $e');
+      }
+
+      if (candidates.isEmpty) {
+        _lastResult = SyncResult(
+          success: false,
+          serversTried: kNtpServers.length,
+          serversOK: 0,
+          perServerBestDelay: perServerBest,
+          error: '所有 NTP 源均失败，请检查网络',
+        );
+        return _lastResult!;
+      }
+
+      final (chosen, halfWidth) = candidates.length == 1
+          ? (candidates.first, candidates.first.halfWidthMicros)
+          : marzullo(candidates);
+
+      if (chosen.netDelay > _qualityGateRtt) {
+        _lastResult = SyncResult(
+          success: false,
+          serversTried: kNtpServers.length,
+          serversOK: candidates.length,
+          perServerBestDelay: perServerBest,
+          chosenSource: chosen.host,
+          bestNetDelay: chosen.netDelay,
+          error: '网络延迟过高 (${chosen.netDelay.inMilliseconds}ms)，请重试',
+        );
+        return _lastResult!;
+      }
+
+      final applied = _applyResult(chosen, halfWidth);
+      if (!applied) {
+        _lastResult = SyncResult(
+          success: false,
+          serversTried: kNtpServers.length,
+          serversOK: candidates.length,
+          perServerBestDelay: perServerBest,
+          chosenSource: chosen.host,
+          error: '锚点时间不合理，已拒绝本次同步',
+        );
+        return _lastResult!;
+      }
+
+      _lastResult = SyncResult(
+        success: true,
+        chosenSource: chosen.host,
+        chosenStratum: chosen.stratum,
+        anchorTime: chosen.serverTimeAtRecv,
+        uncertainty: Duration(microseconds: halfWidth),
+        bestNetDelay: chosen.netDelay,
+        serversTried: kNtpServers.length,
+        serversOK: candidates.length,
+        perServerBestDelay: perServerBest,
+        freqCorrection: _freq,
+      );
+      return _lastResult!;
+    } finally {
+      _syncing = false;
+    }
+  }
+
+  /// 应用选中样本为锚点；更新频率纪律。返回 false 表示锚点不合理已拒绝。
+  bool _applyResult(NtpSample chosen, int halfWidthMicros) {
+    final anchorDt = chosen.serverTimeAtRecv;
+    if (anchorDt.year < 2000 || anchorDt.year > 2100) {
+      return false;
+    }
+
+    final serverMicros = chosen.serverTimeAtRecvMicros;
+    final sw = chosen.swRecvMicros;
+
+    // 时钟跳变检测：新锚 vs 旧锚外推偏差 > 200ms → 清空历史，重置 freq
+    if (_anchorTime != null) {
+      final extrapolated = _anchorTime!.microsecondsSinceEpoch +
+          ((sw - _anchorSwMicros) * _freq).round();
+      final diff = (serverMicros - extrapolated).abs();
+      if (diff > _jumpThresholdMicros) {
+        _history.clear();
+        _freq = 1.0;
       }
     }
 
-    if (samples.isEmpty) {
-      return SyncResult(
-        serverHost: host,
-        success: false,
-        allNetRtts: const [],
-        serverProcs: const [],
-        error: errors.isEmpty ? '5 次请求均失败' : errors.join(' | '),
-      );
+    _history.add((sw: sw, serverMicros: serverMicros));
+    if (_history.length > _maxHistory) {
+      _history.removeRange(0, _history.length - _maxHistory);
     }
 
-    // 按 RTT 排序，剔除最大的（最多去掉 2 个离群值）
-    samples.sort((a, b) => a.netRtt.compareTo(b.netRtt));
-    while (samples.length > 3) {
-      samples.removeLast();
-    }
-    final best = samples.first;
-
-    // 质量门控：最佳 RTT > 80ms 说明网络状况差，拒绝本次同步
-    if (best.netRtt > const Duration(milliseconds: 80)) {
-      return SyncResult(
-        serverHost: host,
-        success: false,
-        allNetRtts: samples.map((s) => s.netRtt).toList(),
-        serverProcs: samples.map((s) => s.serverProc).toList(),
-        error: '网络延迟过高 (最佳 ${best.netRtt.inMilliseconds}ms)，请重试或切换服务器',
-      );
+    final f = fitFreq(_history);
+    if (f != null && f.isFinite && f > 0.5 && f < 2.0) {
+      _freq = f;
     }
 
-    _anchorTime = best.serverTimeAtRecv;
-    _anchorSwMicros = _sw.elapsedMicroseconds;
+    _anchorTime = anchorDt;
+    _anchorSwMicros = sw;
     _synced = true;
-
-    return SyncResult(
-      serverHost: host,
-      success: true,
-      anchorTime: best.serverTimeAtRecv,
-      bestRtt: best.netRtt,
-      allNetRtts: samples.map((s) => s.netRtt).toList(),
-      serverProcs: samples.map((s) => s.serverProc).toList(),
-    );
+    return true;
   }
 
-  /// 单次 NTP 查询。返回 [_NtpSample]，失败返回 null。
-  Future<_NtpSample?> _queryOnce(String host) async {
+  /// 最小二乘拟合频率 b（real-us per stopwatch-us）。数据做中心化避免大数精度损失。
+  @visibleForTesting
+  static double? fitFreq(List<({int sw, int serverMicros})> h) {
+    final n = h.length;
+    if (n < 2) return null;
+    final baseSw = h.first.sw;
+    final baseServer = h.first.serverMicros;
+    double sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
+    for (final p in h) {
+      final x = (p.sw - baseSw).toDouble();
+      final y = (p.serverMicros - baseServer).toDouble();
+      sumX += x;
+      sumY += y;
+      sumXY += x * y;
+      sumXX += x * x;
+    }
+    final denom = n * sumXX - sumX * sumX;
+    if (denom == 0) return null;
+    return (n * sumXY - sumX * sumY) / denom;
+  }
+
+  /// Marzullo 交集算法：找最大重叠区间集，取其中最窄区间的样本。
+  @visibleForTesting
+  (NtpSample, int) marzullo(List<NtpSample> candidates) {
+    final eps = <({int val, int delta, int idx})>[];
+    for (var i = 0; i < candidates.length; i++) {
+      final o = candidates[i].offsetMicros;
+      final h = candidates[i].halfWidthMicros;
+      eps.add((val: o - h, delta: 1, idx: i));
+      eps.add((val: o + h, delta: -1, idx: i));
+    }
+    eps.sort((a, b) {
+      final c = a.val.compareTo(b.val);
+      if (c != 0) return c;
+      return b.delta.compareTo(a.delta); // 同值 +1 先于 -1
+    });
+
+    int count = 0, bestCount = 0;
+    final active = <int>{};
+    Set<int> bestActive = const <int>{};
+    for (final e in eps) {
+      if (e.delta > 0) {
+        active.add(e.idx);
+      } else {
+        active.remove(e.idx);
+      }
+      count += e.delta;
+      if (count > bestCount) {
+        bestCount = count;
+        bestActive = {...active};
+      }
+    }
+
+    int chosenIdx = 0;
+    int chosenH = 1 << 62;
+    for (var i = 0; i < candidates.length; i++) {
+      if (bestActive.contains(i) && candidates[i].halfWidthMicros < chosenH) {
+        chosenH = candidates[i].halfWidthMicros;
+        chosenIdx = i;
+      }
+    }
+    return (candidates[chosenIdx], chosenH);
+  }
+
+  /// 单源并发突发采样，取最小 netDelay（时钟过滤器）。
+  /// 8 个样本并发发出，整体耗时 ≈ 1 个 RTT（快源）/ 1s 超时（死源），
+  /// 不再串行等待，提速同时 min-RTT 滤波仍有效。
+  Future<NtpSample?> _queryServer(String host) async {
+    final lookup =
+        await InternetAddress.lookup(host, type: InternetAddressType.IPv4);
+    if (lookup.isEmpty) return null;
+    final addr = lookup.first;
+    final futures = List<Future<NtpSample?>>.generate(
+      _samplesPerServer,
+      (_) async {
+        try {
+          return await queryOnceDirect(addr, hostLabel: host);
+        } catch (_) {
+          return null;
+        }
+      },
+    );
+    final raw = await Future.wait(futures);
+    final samples =
+        raw.whereType<NtpSample>().where((s) => s.isValid).toList();
+    if (samples.length < 3) return null;
+    samples.sort((a, b) => a.netDelay.compareTo(b.netDelay));
+    return samples.first;
+  }
+
+  @visibleForTesting
+  Future<NtpSample?> queryOnceDirect(InternetAddress serverAddr,
+      {int port = _ntpPort, String hostLabel = 'direct'}) async {
     RawDatagramSocket? socket;
     try {
       socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
       final sock = socket;
 
-      // 解析域名为 IP（Windows 上 InternetAddress(host) 对域名解析不可靠）
-      final lookup = await InternetAddress.lookup(host, type: InternetAddressType.IPv4);
-      if (lookup.isEmpty) {
-        throw SocketException('无法解析主机名: $host');
-      }
-      final serverAddr = lookup.first;
-
-      // 构造 48 字节 NTPv3 请求包：byte[0]=0x1B (LI=0, VN=3, Mode=3)
       final req = Uint8List(48);
-      req[0] = 0x1B;
+      req[0] = 0x1B; // LI=0, VN=3, Mode=3(client)
 
-      // tSend：发包瞬间的 Stopwatch 读数
-      final sw = _sw.elapsedMicroseconds;
-      sock.send(req, serverAddr, _ntpPort);
-
-      // 收包结果：(数据报, 收包瞬间Stopwatch读数)
       final completer = Completer<(Datagram, int)>();
       Timer? timer;
       late StreamSubscription sub;
       sub = sock.listen((event) {
         if (event == RawSocketEvent.read) {
+          // 先抓 swRecv，再 receive()，省掉系统调用开销
+          final swRecv = _sw.elapsedMicroseconds;
           final dg = sock.receive();
           if (dg != null && !completer.isCompleted) {
-            // 收包瞬间立即记录 Stopwatch 读数，消除事件循环调度延迟
-            final swRecv = _sw.elapsedMicroseconds;
             timer?.cancel();
             completer.complete((dg, swRecv));
           }
@@ -188,12 +421,15 @@ class NtpTimeEngine {
         }
       });
 
-      timer = Timer(const Duration(seconds: _timeoutSec), () {
+      timer = Timer(const Duration(seconds: _queryTimeoutSec), () {
         if (!completer.isCompleted) {
           sub.cancel();
           completer.completeError(TimeoutException('NTP 请求超时'));
         }
       });
+
+      final swSend = _sw.elapsedMicroseconds;
+      sock.send(req, serverAddr, port);
 
       Datagram dg;
       int swRecv;
@@ -208,44 +444,77 @@ class NtpTimeEngine {
         timer.cancel();
       }
 
-      if (dg.data.length < 48) return null;
-
-      final buf = ByteData.sublistView(dg.data);
-      // T2（服务器收到时刻）= bytes[32..39]
-      final t2Sec = buf.getUint32(32, Endian.big);
-      final t2Frac = buf.getUint32(36, Endian.big);
-      // T3（服务器发出时刻）= bytes[40..47]
-      final t3Sec = buf.getUint32(40, Endian.big);
-      final t3Frac = buf.getUint32(44, Endian.big);
-
-      if (t2Sec == 0 && t3Sec == 0) return null;
-
-      final t2 = _ntpToDateTime(t2Sec, t2Frac);
-      final t3 = _ntpToDateTime(t3Sec, t3Frac);
-      final serverProc = t3.difference(t2);
-
-      // 纯网络往返 = 收发 Stopwatch 时长 - 服务器处理耗时
-      final totalRtt = Duration(microseconds: swRecv - sw);
-      final netRtt = totalRtt - serverProc;
-      final halfNet = Duration(microseconds: netRtt.inMicroseconds ~/ 2);
-
-      // 收包瞬间的服务器绝对时间 = T3 + halfNet
-      final serverTimeAtRecv = t3.add(halfNet);
-
-      return _NtpSample(
-        netRtt.isNegative ? Duration.zero : netRtt,
-        serverTimeAtRecv,
-        serverProc,
-      );
+      return parseResponse(dg.data, swSend, swRecv, hostLabel);
     } finally {
       socket?.close();
     }
   }
 
+  @visibleForTesting
+  NtpSample? parseResponse(
+      Uint8List data, int swSend, int swRecv, String host) {
+    if (data.length < 48) return null;
+    final buf = ByteData.sublistView(data);
+
+    final b0 = buf.getUint8(0);
+    final mode = b0 & 0x07;
+    final leap = (b0 >> 6) & 0x03;
+    if (mode != 4) return null; // 非服务器响应
+    if (leap == 3) return null; // 告警：时钟未同步
+
+    final stratum = buf.getUint8(1);
+    if (stratum < 1 || stratum > 15) return null; // 拒 Kiss-o'-Death(0) & 未同步(16+)
+
+    final rootDelayUs = _readFixedSigned(buf, 4);
+    final rootDispUs = _readFixedUnsigned(buf, 8);
+
+    final t2Sec = buf.getUint32(32, Endian.big);
+    final t2Frac = buf.getUint32(36, Endian.big);
+    final t3Sec = buf.getUint32(40, Endian.big);
+    final t3Frac = buf.getUint32(44, Endian.big);
+    if (t2Sec == 0 || t3Sec == 0) return null;
+
+    final t2 = ntpToDateTime(t2Sec, t2Frac);
+    final t3 = ntpToDateTime(t3Sec, t3Frac);
+    final serverProc = t3.difference(t2);
+    final roundTrip = Duration(microseconds: swRecv - swSend);
+    final netDelay = roundTrip - serverProc;
+    if (netDelay.isNegative) return null;
+
+    return NtpSample(
+      host: host,
+      swSendMicros: swSend,
+      swRecvMicros: swRecv,
+      t2: t2,
+      t3: t3,
+      roundTrip: roundTrip,
+      netDelay: netDelay,
+      stratum: stratum,
+      rootDelay: Duration(microseconds: rootDelayUs),
+      rootDispersion: Duration(microseconds: rootDispUs),
+    );
+  }
+
+  /// 16.16 有符号定点秒 → 微秒
+  int _readFixedSigned(ByteData buf, int off) {
+    final raw = buf.getInt32(off, Endian.big);
+    return (raw * 1000000) ~/ 65536;
+  }
+
+  /// 16.16 无符号定点秒 → 微秒
+  int _readFixedUnsigned(ByteData buf, int off) {
+    final raw = buf.getUint32(off, Endian.big);
+    return (raw * 1000000) ~/ 65536;
+  }
+
   /// NTP 时间戳（1900 起的秒 + 32 位小数）→ DateTime(UTC)，微秒精度
-  DateTime _ntpToDateTime(int seconds, int fraction) {
-    const ntpToUnixSecs = 2208988800; // 1900-01-01 → 1970-01-01 的秒数
-    final unixMicros = (seconds - ntpToUnixSecs) * 1000000 + (fraction * 1000000 ~/ 4294967296);
+  @visibleForTesting
+  static DateTime ntpToDateTime(int seconds, int fraction) {
+    if (seconds < _ntpToUnixSecs) {
+      seconds += (1 << 32); // 2036 era 翻转处理
+    }
+    final unixMicros = (seconds - _ntpToUnixSecs) * 1000000 +
+        (fraction * 1000000 ~/ 4294967296);
     return DateTime.fromMicrosecondsSinceEpoch(unixMicros, isUtc: true);
   }
 }

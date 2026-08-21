@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 
@@ -17,7 +18,6 @@ class _HomeScreenState extends State<HomeScreen> {
   final NtpTimeEngine _engine = NtpTimeEngine();
   late final ClickScheduler _scheduler = ClickScheduler(_engine);
 
-  int _serverIndex = 0;
   bool _syncing = false;
   SyncResult? _syncResult;
   bool _autoSynced = false;
@@ -52,8 +52,10 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    _clockTimer = Timer.periodic(const Duration(milliseconds: 50), _onClockTick);
-    _syncNow(auto: true);
+    if (Platform.environment['FLUTTER_TEST'] != 'true') {
+      _clockTimer = Timer.periodic(const Duration(milliseconds: 50), _onClockTick);
+      _syncNow(auto: true);
+    }
   }
 
   @override
@@ -86,8 +88,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _syncing = true;
       _syncResult = null;
     });
-    final host = kNtpServers[_serverIndex].host;
-    final result = await _engine.synchronize(host);
+    final result = await _engine.synchronize();
     setState(() {
       _syncing = false;
       _syncResult = result;
@@ -383,18 +384,14 @@ class _HomeScreenState extends State<HomeScreen> {
         Row(
           children: [
             Expanded(
-              child: DropdownButton<int>(
-                value: _serverIndex,
-                isExpanded: true,
-                items: [
-                  for (var i = 0; i < kNtpServers.length; i++)
-                    DropdownMenuItem(value: i, child: Text(kNtpServers[i].label)),
-                ],
-                onChanged: _syncing
-                    ? null
-                    : (v) {
-                        if (v != null) setState(() => _serverIndex = v);
-                      },
+              child: Text(
+                (_syncResult != null &&
+                        _syncResult!.success &&
+                        _syncResult!.chosenSource != null)
+                    ? '源: ${_syncResult!.chosenSource}'
+                    : '源: 自动 (${kNtpServers.length} 选 1)',
+                style: const TextStyle(fontSize: 13),
+                overflow: TextOverflow.ellipsis,
               ),
             ),
             const SizedBox(width: 8),
@@ -413,7 +410,17 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ],
         ),
-        if (_syncResult != null && !_syncResult!.success)
+        if (_syncResult != null && _syncResult!.success)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(
+              '不确定度 ±${_syncResult!.uncertainty?.inMilliseconds ?? 0}ms  '
+              '延迟 ${_syncResult!.bestNetDelay?.inMilliseconds ?? 0}ms  '
+              '源 S${_syncResult!.chosenStratum ?? '-'}',
+              style: const TextStyle(color: Colors.blue, fontSize: 12),
+            ),
+          )
+        else if (_syncResult != null && !_syncResult!.success)
           Padding(
             padding: const EdgeInsets.only(top: 4),
             child: Text('同步失败：${_syncResult!.error}',
