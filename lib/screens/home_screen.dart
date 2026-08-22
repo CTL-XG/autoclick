@@ -311,45 +311,109 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         title: const Text('NTP 自动点击器'),
         centerTitle: true,
+        elevation: 0,
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _buildSyncHeader(),
-            const Divider(height: 24),
-            _buildTimeRow(),
-            const SizedBox(height: 14),
-            _buildCoordRow(),
-            const SizedBox(height: 14),
-            _buildOffsetRow(),
-            const SizedBox(height: 14),
-            _buildClickRow(),
-            const SizedBox(height: 24),
-            _buildActionButton(running),
-            const SizedBox(height: 12),
-            if (running && _remaining != null)
-              Text(
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final isDesktop = constraints.maxWidth >= 800;
+          return isDesktop
+              ? _buildDesktopLayout(running)
+              : _buildMobileLayout(running);
+        },
+      ),
+    );
+  }
+
+  Widget _buildDesktopLayout(bool running) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _buildSyncHeader(),
+          const SizedBox(height: 12),
+          _buildTimeRow(),
+          const SizedBox(height: 12),
+          _buildCoordRow(),
+          const SizedBox(height: 12),
+          _buildOffsetRow(),
+          const SizedBox(height: 12),
+          _buildClickRow(),
+          const SizedBox(height: 16),
+          _buildActionButton(running),
+          const SizedBox(height: 12),
+          if (running && _remaining != null)
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.blue.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.blue.withValues(alpha: 0.3)),
+              ),
+              child: Text(
                 '倒计时  ${_fmtDur(_remaining!)}',
                 textAlign: TextAlign.center,
                 style: const TextStyle(
-                    fontSize: 16,
+                    fontSize: 18,
                     fontWeight: FontWeight.w600,
-                    color: Colors.deepPurple),
+                    color: Colors.blue),
               ),
-            if (_schedState == SchedulerState.firing && _clickTotal > 1)
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Text(
-                  '连击  $_clickDone / $_clickTotal',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(fontSize: 14, color: Colors.orange),
-                ),
+            ),
+          if (_schedState == SchedulerState.firing && _clickTotal > 1)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                '连击  $_clickDone / $_clickTotal',
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 16, color: Colors.orange),
               ),
-            _buildStatus(),
-          ],
-        ),
+            ),
+          const SizedBox(height: 12),
+          _buildStatus(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMobileLayout(bool running) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _buildSyncHeader(),
+          const SizedBox(height: 12),
+          _buildTimeRow(),
+          const SizedBox(height: 8),
+          _buildCoordRow(),
+          const SizedBox(height: 8),
+          _buildOffsetRow(),
+          const SizedBox(height: 8),
+          _buildClickRow(),
+          const SizedBox(height: 16),
+          _buildActionButton(running),
+          const SizedBox(height: 8),
+          if (running && _remaining != null)
+            Text(
+              '倒计时  ${_fmtDur(_remaining!)}',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.deepPurple),
+            ),
+          if (_schedState == SchedulerState.firing && _clickTotal > 1)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                '连击  $_clickDone / $_clickTotal',
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 14, color: Colors.orange),
+              ),
+            ),
+          const SizedBox(height: 8),
+          _buildStatus(),
+        ],
       ),
     );
   }
@@ -357,215 +421,311 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildSyncHeader() {
     final synced = _engine.isSynced;
 
-    return Column(
-      children: [
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            Text(
-              synced ? _clockText : '未同步',
-              style: const TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                  fontFamily: 'Consolas'),
-            ),
-            const SizedBox(width: 8),
-            Container(
-              width: 10,
-              height: 10,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: synced ? Colors.green : Colors.red,
-              ),
-            ),
-          ],
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: synced
+            ? Colors.green.withValues(alpha: 0.05)
+            : Colors.red.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: synced
+              ? Colors.green.withValues(alpha: 0.3)
+              : Colors.red.withValues(alpha: 0.3),
+          width: 1,
         ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                (_syncResult != null &&
-                        _syncResult!.success &&
-                        _syncResult!.chosenSource != null)
-                    ? '源: ${_syncResult!.chosenSource}'
-                    : '源: 自动 (${kNtpServers.length} 选 1)',
-                style: const TextStyle(fontSize: 13),
-                overflow: TextOverflow.ellipsis,
+      ),
+      child: Column(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Text(
+                synced ? _clockText : '未同步',
+                style: TextStyle(
+                    fontSize: synced ? 28 : 24,
+                    fontWeight: FontWeight.bold,
+                    fontFamily: 'Consolas',
+                    color: synced ? Colors.green : Colors.red),
               ),
-            ),
-            const SizedBox(width: 8),
-            SizedBox(
-              height: 36,
-              child: FilledButton.icon(
-                onPressed: _syncing ? null : () => _syncNow(),
-                icon: _syncing
-                    ? const SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Icon(Icons.sync, size: 16),
-                label: Text(_syncing ? '同步中' : '同步'),
+              const SizedBox(width: 8),
+              Container(
+                width: 12,
+                height: 12,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: synced ? Colors.green : Colors.red,
+                  boxShadow: synced
+                      ? [
+                          BoxShadow(
+                            color: Colors.green.withValues(alpha: 0.4),
+                            blurRadius: 8,
+                            spreadRadius: 2,
+                          ),
+                        ]
+                      : null,
+                ),
               ),
-            ),
-          ],
-        ),
-        if (_syncResult != null && _syncResult!.success)
-          Padding(
-            padding: const EdgeInsets.only(top: 4),
-            child: Text(
-              '不确定度 ±${_syncResult!.uncertainty?.inMilliseconds ?? 0}ms  '
-              '延迟 ${_syncResult!.bestNetDelay?.inMilliseconds ?? 0}ms  '
-              '源 S${_syncResult!.chosenStratum ?? '-'}',
-              style: const TextStyle(color: Colors.blue, fontSize: 12),
-            ),
-          )
-        else if (_syncResult != null && !_syncResult!.success)
-          Padding(
-            padding: const EdgeInsets.only(top: 4),
-            child: Text('同步失败：${_syncResult!.error}',
-                style: const TextStyle(color: Colors.red, fontSize: 12)),
+            ],
           ),
-      ],
+          const SizedBox(height: 8),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      (_syncResult != null &&
+                              _syncResult!.success &&
+                              _syncResult!.chosenSource != null)
+                          ? '源: ${_syncResult!.chosenSource}'
+                          : '源: 自动 (${kNtpServers.length} 选 1)',
+                      style: const TextStyle(fontSize: 13),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    if (_syncResult != null && _syncResult!.success)
+                      Text(
+                        '不确定度 ±${_syncResult!.uncertainty?.inMilliseconds ?? 0}ms  '
+                        '延迟 ${_syncResult!.bestNetDelay?.inMilliseconds ?? 0}ms  '
+                        '源 S${_syncResult!.chosenStratum ?? '-'}',
+                        style: const TextStyle(
+                            color: Colors.blue, fontSize: 12, height: 1.3),
+                      )
+                    else if (_syncResult != null && !_syncResult!.success)
+                      Text('同步失败：${_syncResult!.error}',
+                          style: const TextStyle(
+                              color: Colors.red, fontSize: 12, height: 1.3)),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              SizedBox(
+                height: 40,
+                child: FilledButton.icon(
+                  onPressed: _syncing ? null : () => _syncNow(),
+                  icon: _syncing
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white))
+                      : const Icon(Icons.sync, size: 18),
+                  label: Text(_syncing ? '同步中' : '同步'),
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 
   Widget _buildTimeRow() {
-    return Row(
-      children: [
-        _label('目标'),
-        const SizedBox(width: 8),
-        SizedBox(
-          width: 110,
-          child: OutlinedButton(
-            onPressed: _engine.isSynced
-                ? () async {
-                    final picked = await showDatePicker(
-                      context: context,
-                      initialDate: _date ?? DateTime.now().toLocal(),
-                      firstDate: DateTime.now().toLocal(),
-                      lastDate:
-                          DateTime.now().toLocal().add(const Duration(days: 365)),
-                    );
-                    if (picked != null) {
-                      setState(() {
-                        _date =
-                            DateTime(picked.year, picked.month, picked.day);
-                      });
-                    }
-                  }
-                : null,
-            child: Text(
-              _date == null ? '选择日期' : '${_date!.month}/${_date!.day}',
-              style: const TextStyle(fontSize: 13),
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.grey.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
+      ),
+      child: Row(
+        children: [
+          _label('目标'),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Row(
+              children: [
+                Flexible(
+                  child: SizedBox(
+                    height: 44,
+                    child: OutlinedButton(
+                      onPressed: _engine.isSynced
+                          ? () async {
+                              final picked = await showDatePicker(
+                                context: context,
+                                initialDate:
+                                    _date ?? DateTime.now().toLocal(),
+                                firstDate: DateTime.now().toLocal(),
+                                lastDate: DateTime.now()
+                                    .toLocal()
+                                    .add(const Duration(days: 365)),
+                              );
+                              if (picked != null) {
+                                setState(() {
+                                  _date = DateTime(
+                                      picked.year, picked.month, picked.day);
+                                });
+                              }
+                            }
+                          : null,
+                      style: OutlinedButton.styleFrom(
+                        padding:
+                            const EdgeInsets.symmetric(horizontal: 12),
+                      ),
+                      child: Text(
+                        _date == null
+                            ? '选择日期'
+                            : '${_date!.month}/${_date!.day}',
+                        style: const TextStyle(fontSize: 14),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                _f(_hourCtrl, width: 70),
+                const Text(' : ',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
+                _f(_minuteCtrl, width: 70),
+                const Text(' : ',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
+                _f(_secondCtrl, width: 70),
+                const Text(' . ',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
+                _f(_msCtrl, width: 80),
+              ],
             ),
           ),
-        ),
-        const SizedBox(width: 4),
-        _f(_hourCtrl, width: 56),
-        const Text(' : ', style: TextStyle(fontWeight: FontWeight.bold)),
-        _f(_minuteCtrl, width: 56),
-        const Text(' : ', style: TextStyle(fontWeight: FontWeight.bold)),
-        _f(_secondCtrl, width: 56),
-        const Text(' . ', style: TextStyle(fontWeight: FontWeight.bold)),
-        _f(_msCtrl, width: 66),
-      ],
+        ],
+      ),
     );
   }
 
   Widget _buildCoordRow() {
-    return Row(
-      children: [
-        _label('坐标'),
-        const SizedBox(width: 8),
-        SizedBox(
-          width: 85,
-          child: TextField(
-            controller: _xCtrl,
-            readOnly: _picking,
-            keyboardType: TextInputType.number,
-            decoration: InputDecoration(
-              labelText: 'X',
-              isDense: true,
-              border: const OutlineInputBorder(),
-              fillColor: _picking
-                  ? Colors.amber.withValues(alpha: 0.2)
-                  : null,
-              filled: _picking,
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.grey.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
+      ),
+      child: Row(
+        children: [
+          _label('坐标'),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 120,
+                  child: TextField(
+                    controller: _xCtrl,
+                    readOnly: _picking,
+                    keyboardType: TextInputType.number,
+                    decoration: InputDecoration(
+                      labelText: 'X',
+                      isDense: true,
+                      border: const OutlineInputBorder(),
+                      fillColor: _picking
+                          ? Colors.amber.withValues(alpha: 0.1)
+                          : null,
+                      filled: _picking,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                SizedBox(
+                  width: 120,
+                  child: TextField(
+                    controller: _yCtrl,
+                    readOnly: _picking,
+                    keyboardType: TextInputType.number,
+                    decoration: InputDecoration(
+                      labelText: 'Y',
+                      isDense: true,
+                      border: const OutlineInputBorder(),
+                      fillColor: _picking
+                          ? Colors.amber.withValues(alpha: 0.1)
+                          : null,
+                      filled: _picking,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                if (_picking)
+                  FilledButton.icon(
+                    onPressed: _stopPicking,
+                    icon: const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white)),
+                    label: const Text('拾取中…F6'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: Colors.orange,
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                    ),
+                  )
+                else
+                  OutlinedButton.icon(
+                    onPressed: _engine.isSynced ? _pickCoordinate : null,
+                    icon: const Icon(Icons.my_location, size: 18),
+                    label: const Text('拾取'),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                    ),
+                  ),
+              ],
             ),
           ),
-        ),
-        const SizedBox(width: 6),
-        SizedBox(
-          width: 85,
-          child: TextField(
-            controller: _yCtrl,
-            readOnly: _picking,
-            keyboardType: TextInputType.number,
-            decoration: InputDecoration(
-              labelText: 'Y',
-              isDense: true,
-              border: const OutlineInputBorder(),
-              fillColor: _picking
-                  ? Colors.amber.withValues(alpha: 0.2)
-                  : null,
-              filled: _picking,
-            ),
-          ),
-        ),
-        const SizedBox(width: 6),
-        if (_picking)
-          FilledButton.icon(
-            onPressed: _stopPicking,
-            icon: const SizedBox(
-                width: 14,
-                height: 14,
-                child: CircularProgressIndicator(
-                    strokeWidth: 2, color: Colors.white)),
-            label: const Text('拾取中…F6'),
-            style: FilledButton.styleFrom(
-              backgroundColor: Colors.orange,
-              padding: const EdgeInsets.symmetric(horizontal: 10),
-            ),
-          )
-        else
-          OutlinedButton.icon(
-            onPressed: _engine.isSynced ? _pickCoordinate : null,
-            icon: const Icon(Icons.my_location, size: 16),
-            label: const Text('拾取'),
-          ),
-      ],
+        ],
+      ),
     );
   }
 
   Widget _buildOffsetRow() {
-    return Row(
-      children: [
-        _label('偏移'),
-        const SizedBox(width: 8),
-        const Text('比实际时间', style: TextStyle(fontSize: 13)),
-        const SizedBox(width: 4),
-        _buildEarlyToggle(),
-        const SizedBox(width: 4),
-        _f(_offsetCtrl, width: 56),
-        const SizedBox(width: 2),
-        const Text('毫秒', style: TextStyle(fontSize: 13)),
-      ],
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.grey.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
+      ),
+      child: Row(
+        children: [
+          _label('偏移'),
+          const SizedBox(width: 8),
+          const Text('比实际时间', style: TextStyle(fontSize: 13)),
+          const SizedBox(width: 4),
+          _buildEarlyToggle(),
+          const SizedBox(width: 4),
+          SizedBox(
+            width: 80,
+            child: TextField(
+              controller: _offsetCtrl,
+              keyboardType: TextInputType.number,
+              textAlign: TextAlign.center,
+              decoration: const InputDecoration(
+                isDense: true,
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ),
+          const SizedBox(width: 2),
+          const Text('毫秒', style: TextStyle(fontSize: 13)),
+        ],
+      ),
     );
   }
 
   Widget _buildEarlyToggle() {
     return Container(
-      height: 32,
+      height: 40,
       decoration: BoxDecoration(
-        border: Border.all(color: Colors.grey.shade400),
-        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: Colors.grey.shade300),
+        borderRadius: BorderRadius.circular(8),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           _segEarly('早', true),
-          Container(width: 1, height: 24, color: Colors.grey.shade400),
+          Container(width: 1, height: 32, color: Colors.grey.shade300),
           _segEarly('晚', false),
         ],
       ),
@@ -575,15 +735,17 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _segEarly(String label, bool value) {
     final selected = _offsetEarly == value;
     return GestureDetector(
+      behavior: HitTestBehavior.opaque,
       onTap: () => setState(() => _offsetEarly = value),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        color: selected ? Colors.indigo.withValues(alpha: 0.12) : null,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        color: selected ? Colors.indigo.withValues(alpha: 0.15) : null,
         child: Text(
           label,
           style: TextStyle(
-            fontSize: 13,
+            fontSize: 14,
             fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+            color: selected ? Colors.indigo : Colors.grey.shade700,
           ),
         ),
       ),
@@ -591,59 +753,74 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildClickRow() {
-    return Row(
-      children: [
-        _label('点击'),
-        const SizedBox(width: 8),
-        SizedBox(
-          width: 52,
-          child: TextField(
-            controller: _repeatCtrl,
-            keyboardType: TextInputType.number,
-            textAlign: TextAlign.center,
-            decoration: const InputDecoration(
-                isDense: true, border: OutlineInputBorder(), hintText: '1'),
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.grey.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
+      ),
+      child: Row(
+        children: [
+          _label('点击'),
+          const SizedBox(width: 8),
+          SizedBox(
+            width: 70,
+            child: TextField(
+              controller: _repeatCtrl,
+              keyboardType: TextInputType.number,
+              textAlign: TextAlign.center,
+              decoration: const InputDecoration(
+                isDense: true,
+                border: OutlineInputBorder(),
+              ),
+            ),
           ),
-        ),
-        const SizedBox(width: 2),
-        const Text('次', style: TextStyle(fontSize: 13)),
-        const SizedBox(width: 10),
-        SizedBox(
-          width: 62,
-          child: TextField(
-            controller: _intervalCtrl,
-            keyboardType: TextInputType.number,
-            textAlign: TextAlign.center,
-            decoration: const InputDecoration(
-                isDense: true, border: OutlineInputBorder(), hintText: '100'),
+          const SizedBox(width: 4),
+          const Text('次', style: TextStyle(fontSize: 13)),
+          const SizedBox(width: 20),
+          SizedBox(
+            width: 80,
+            child: TextField(
+              controller: _intervalCtrl,
+              keyboardType: TextInputType.number,
+              textAlign: TextAlign.center,
+              decoration: const InputDecoration(
+                isDense: true,
+                border: OutlineInputBorder(),
+              ),
+            ),
           ),
-        ),
-        const SizedBox(width: 2),
-        const Text('ms', style: TextStyle(fontSize: 13)),
-        const SizedBox(width: 10),
-        _buildButtonToggle(),
-        const Spacer(),
-        OutlinedButton.icon(
-          onPressed: _testClick,
-          icon: const Icon(Icons.flash_on, size: 16),
-          label: const Text('测试'),
-        ),
-      ],
+          const SizedBox(width: 4),
+          const Text('ms', style: TextStyle(fontSize: 13)),
+          const SizedBox(width: 20),
+          _buildButtonToggle(),
+          const Spacer(),
+          OutlinedButton.icon(
+            onPressed: _testClick,
+            icon: const Icon(Icons.flash_on, size: 18),
+            label: const Text('测试'),
+            style: OutlinedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
   Widget _buildButtonToggle() {
     return Container(
-      height: 32,
+      height: 40,
       decoration: BoxDecoration(
-        border: Border.all(color: Colors.grey.shade400),
-        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: Colors.grey.shade300),
+        borderRadius: BorderRadius.circular(8),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           _seg('左', MouseButton.left),
-          Container(width: 1, height: 24, color: Colors.grey.shade400),
+          Container(width: 1, height: 32, color: Colors.grey.shade300),
           _seg('右', MouseButton.right),
         ],
       ),
@@ -653,15 +830,17 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _seg(String label, MouseButton value) {
     final selected = _button == value;
     return GestureDetector(
+      behavior: HitTestBehavior.opaque,
       onTap: () => setState(() => _button = value),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        color: selected ? Colors.indigo.withValues(alpha: 0.12) : null,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        color: selected ? Colors.indigo.withValues(alpha: 0.15) : null,
         child: Text(
           label,
           style: TextStyle(
-            fontSize: 13,
+            fontSize: 14,
             fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+            color: selected ? Colors.indigo : Colors.grey.shade700,
           ),
         ),
       ),
@@ -669,14 +848,27 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildActionButton(bool running) {
-    return FilledButton.icon(
-      onPressed: running ? _stopTask : _startTask,
-      icon: Icon(running ? Icons.stop : Icons.play_arrow),
-      label: Text(running ? '停止' : '启动定时点击',
-          style: const TextStyle(fontSize: 16)),
-      style: FilledButton.styleFrom(
-        padding: const EdgeInsets.symmetric(vertical: 16),
-        backgroundColor: running ? Colors.red : null,
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: (running ? Colors.red : Colors.blue).withValues(alpha: 0.3),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: FilledButton.icon(
+        onPressed: running ? _stopTask : _startTask,
+        icon: Icon(running ? Icons.stop : Icons.play_arrow),
+        label: Text(running ? '停止' : '启动定时点击',
+            style: const TextStyle(fontSize: 16)),
+        style: FilledButton.styleFrom(
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          backgroundColor: running ? Colors.red : null,
+          foregroundColor: Colors.white,
+        ),
       ),
     );
   }
@@ -691,23 +883,45 @@ class _HomeScreenState extends State<HomeScreen> {
         return const SizedBox.shrink();
       case SchedulerState.done:
         final t = _firedAt != null ? _fmt(_firedAt!) : '';
-        return Text(
-          '已完成  $_clickTotal 次点击    $t',
-          textAlign: TextAlign.center,
-          style: const TextStyle(
-              color: Colors.green, fontWeight: FontWeight.w600, fontSize: 15),
+        return Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.green.withValues(alpha: 0.1),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.green.withValues(alpha: 0.3)),
+          ),
+          child: Text(
+            '已完成  $_clickTotal 次点击    $t',
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+                color: Colors.green, fontWeight: FontWeight.w600, fontSize: 15),
+          ),
         );
       case SchedulerState.cancelled:
-        return Text(
-          '已取消',
-          textAlign: TextAlign.center,
-          style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
+        return Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.grey.withValues(alpha: 0.1),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Text(
+            '已取消',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
+          ),
         );
       case SchedulerState.error:
-        return Text(
-          '$_schedError',
-          textAlign: TextAlign.center,
-          style: const TextStyle(color: Colors.red, fontSize: 13),
+        return Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.red.withValues(alpha: 0.1),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Text(
+            '$_schedError',
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.red, fontSize: 13),
+          ),
         );
     }
   }

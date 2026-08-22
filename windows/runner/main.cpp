@@ -28,8 +28,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   // Initial window size (logical 96-dpi units, DPI-scaled automatically)
   int screenW = ::GetSystemMetrics(SM_CXSCREEN);
   int screenH = ::GetSystemMetrics(SM_CYSCREEN);
-  int winW = 600;
-  int winH = 680;
+  int winW = 610;
+  int winH = 700;
   if (winW > screenW) winW = screenW;
   if (winH > screenH) winH = screenH;
   Win32Window::Point origin((screenW - winW) / 2, (screenH - winH) / 2);

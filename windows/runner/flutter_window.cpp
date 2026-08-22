@@ -2,6 +2,9 @@
 
 #include <optional>
 
+#include <flutter_windows.h>
+#include <windows.h>
+
 #include "flutter/generated_plugin_registrant.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
@@ -59,6 +62,19 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
     case WM_FONTCHANGE:
       flutter_controller_->engine()->ReloadSystemFonts();
       break;
+    case WM_GETMINMAXINFO: {
+      // Enforce a minimum window track size (logical 96-dpi units: 610x700).
+      // MINMAXINFO.ptMinTrackSize is in physical pixels, so scale by DPI.
+      auto mmi = reinterpret_cast<MINMAXINFO*>(lparam);
+      HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+      UINT dpi = FlutterDesktopGetDpiForMonitor(monitor);
+      double scale_factor = dpi / 96.0;
+      mmi->ptMinTrackSize.x =
+          static_cast<LONG>(610 * scale_factor);
+      mmi->ptMinTrackSize.y =
+          static_cast<LONG>(700 * scale_factor);
+      break;
+    }
   }
 
   return Win32Window::MessageHandler(hwnd, message, wparam, lparam);
