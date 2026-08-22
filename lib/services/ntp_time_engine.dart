@@ -11,14 +11,14 @@ class NtpServer {
   const NtpServer(this.host, this.label);
 }
 
-/// 源池：stratum-1 为主 + 国内 stratum-2 快源
+/// 源池：国内公共 NTP 服务器（多机构多源交叉验证）
 const List<NtpServer> kNtpServers = [
-  NtpServer('time.cloudflare.com', 'Cloudflare (S1)'),
-  NtpServer('time.google.com', 'Google (S1)'),
-  NtpServer('time.apple.com', 'Apple (S1)'),
-  NtpServer('ntp.aliyun.com', '阿里云 (S2)'),
-  NtpServer('cn.pool.ntp.org', 'NTP Pool CN'),
-  NtpServer('time.windows.com', 'Windows (S2)'),
+  NtpServer('ntp.aliyun.com', '阿里云'),
+  NtpServer('ntp.cnnic.cn', '中国互联网信息中心'),
+  NtpServer('ntp2.tencent.com', '腾讯云'),
+  NtpServer('ntp.tuna.tsinghua.edu.cn', '清华 TUNA'),
+  NtpServer('ntp.sjtu.edu.cn', '上海交大'),
+  NtpServer('ntp.ntsc.ac.cn', '中科院授时中心'),
 ];
 
 /// 单次 NTP 请求结果（携带 swRecv，修复锚点配对 bug）
